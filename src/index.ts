@@ -41,7 +41,9 @@ export default function (pi: ExtensionAPI) {
 	function applyMode(ctx: ExtensionContext) {
 		const others = pi.getActiveTools().filter((name) => !WRITE_TOOLS.includes(name));
 		pi.setActiveTools(mode === "read-write" ? [...others, ...WRITE_TOOLS] : others);
-		ctx.ui.setStatus("imap", mode === "read-write" ? "IMAP: read-write" : "IMAP: read-only");
+		const theme = ctx.ui.theme;
+		const label = mode === "read-write" ? theme.fg("warning", "read-write") : theme.fg("success", "read-only");
+		ctx.ui.setStatus("imap", `${theme.fg("dim", "IMAP:")} ${label}`);
 	}
 
 	/** Second line of defence: write tools refuse to run in read-only mode. */
