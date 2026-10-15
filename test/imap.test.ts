@@ -85,7 +85,12 @@ function fakePi() {
 	let active: string[] = ["read", "bash"];
 	const ctx = {
 		hasUI: false,
-		ui: { setStatus() {}, notify() {}, confirm: async () => true },
+		ui: {
+			theme: { fg: (_color: string, text: string) => text },
+			setStatus() {},
+			notify() {},
+			confirm: async () => true,
+		},
 	};
 	const pi = {
 		registerTool(tool: any) {
