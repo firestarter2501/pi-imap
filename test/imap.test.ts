@@ -4,6 +4,7 @@
  */
 
 import assert from "node:assert/strict";
+import net from "node:net";
 import { before, describe, test } from "node:test";
 import { ImapFlow } from "imapflow";
 import extension from "../src/index.ts";
@@ -31,6 +32,48 @@ async function appendMessage(mailbox: string, subject: string, body: string, htm
 		`Date: ${new Date().toUTCString()}\r\nContent-Type: ${contentType}; charset=utf-8\r\n\r\n${body}\r\n`;
 	await client.append(mailbox, raw);
 	await client.logout();
+}
+
+/**
+ * TCP proxy in front of the test server that can make the server go silent
+ * (`stall`) or drop the connection (`reset`), like a flaky network would.
+ * With `afterMs` set, every connection fails that long after it was opened.
+ */
+async function faultyProxy(targetPort: number, mode: "stall" | "reset", afterMs?: number) {
+	const sockets = new Set<net.Socket>();
+	let stalled = false;
+	const fail = (client: net.Socket, upstream: net.Socket) => {
+		if (mode === "reset") {
+			client.resetAndDestroy();
+			upstream.destroy();
+		} else {
+			stalled = true;
+		}
+	};
+	const server = net.createServer((client) => {
+		const upstream = net.connect(targetPort, config.host);
+		sockets.add(client).add(upstream);
+		client.on("data", (d) => stalled || upstream.write(d));
+		upstream.on("data", (d) => stalled || client.write(d));
+		client.on("error", () => upstream.destroy());
+		upstream.on("error", () => client.destroy());
+		client.on("close", () => upstream.destroy());
+		upstream.on("close", () => client.destroy());
+		if (afterMs !== undefined) setTimeout(() => fail(client, upstream), afterMs);
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	return {
+		port: (server.address() as net.AddressInfo).port,
+		/** Make the connection fail now. */
+		fail() {
+			const [client, upstream] = [...sockets];
+			fail(client, upstream);
+		},
+		close() {
+			for (const socket of sockets) socket.destroy();
+			server.close();
+		},
+	};
 }
 
 /** Minimal stand-in for pi's ExtensionAPI, enough to load the extension. */
@@ -163,5 +206,55 @@ describe("extension modes", () => {
 		const read = await pi.run("imap_read", { uid, maxChars: 5 });
 		assert.match(read, /Subject: Hello from Alice/);
 		assert.match(read, /\[truncated:/);
+	});
+});
+
+describe("connection failures do not crash the process", () => {
+	const targets = [
+		{ name: "STARTTLS", port: config.port, secure: false },
+		...(process.env.IMAP_TEST_TLS_PORT
+			? [{ name: "implicit TLS", port: Number(process.env.IMAP_TEST_TLS_PORT), secure: true }]
+			: []),
+	];
+
+	for (const target of targets) {
+		for (const mode of ["stall", "reset"] as const) {
+			test(`${target.name}: server ${mode}s after connecting`, async () => {
+				const proxy = await faultyProxy(target.port, mode);
+				const cfg = { ...config, host: "127.0.0.1", port: proxy.port, secure: target.secure, timeoutMs: 500 };
+				try {
+					// Without an 'error' listener this used to end the process with
+					// "Unhandled 'error' event" instead of rejecting.
+					await assert.rejects(
+						imap.withClient(cfg, async (client) => {
+							proxy.fail();
+							return client.list();
+						}),
+						mode === "stall" ? /Socket timeout/ : /Connection not available|IMAP connection failed/,
+					);
+				} finally {
+					proxy.close();
+				}
+			});
+
+			test(`${target.name}: server ${mode}s at any point of the session`, async () => {
+				for (const afterMs of [0, 10, 30, 60, 100, 200]) {
+					const proxy = await faultyProxy(target.port, mode, afterMs);
+					const cfg = { ...config, host: "127.0.0.1", port: proxy.port, secure: target.secure, timeoutMs: 500 };
+					try {
+						// Depending on timing the call may still succeed; it just must not crash or hang.
+						await imap.listMailboxes(cfg).catch(() => undefined);
+					} finally {
+						proxy.close();
+					}
+				}
+			});
+		}
+	}
+
+	test("rejects a bad IMAP_TIMEOUT", () => {
+		const env = { IMAP_HOST: "h", IMAP_USER: "u", IMAP_PASSWORD: "p" };
+		assert.equal(imap.configFromEnv({ ...env, IMAP_TIMEOUT: "5" }).timeoutMs, 5000);
+		assert.throws(() => imap.configFromEnv({ ...env, IMAP_TIMEOUT: "soon" }), /IMAP_TIMEOUT/);
 	});
 });
