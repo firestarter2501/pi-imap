@@ -17,7 +17,11 @@ export interface ImapConfig {
 	password: string;
 	/** Set to false only for servers with self-signed certificates. */
 	rejectUnauthorized: boolean;
+	/** Give up when connecting, or when the server stays silent, for this many milliseconds. */
+	timeoutMs: number;
 }
+
+const DEFAULT_TIMEOUT_SECONDS = 60;
 
 /** Read connection settings from environment variables. */
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ImapConfig {
@@ -26,6 +30,10 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ImapConfig 
 		throw new Error(`IMAP is not configured. Missing environment variables: ${missing.join(", ")}`);
 	}
 	const port = Number(env.IMAP_PORT ?? 993);
+	const timeoutSeconds = Number(env.IMAP_TIMEOUT ?? DEFAULT_TIMEOUT_SECONDS);
+	if (!(timeoutSeconds > 0)) {
+		throw new Error(`IMAP_TIMEOUT must be a positive number of seconds, got "${env.IMAP_TIMEOUT}"`);
+	}
 	return {
 		host: env.IMAP_HOST!,
 		port,
@@ -34,22 +42,40 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): ImapConfig 
 		user: env.IMAP_USER!,
 		password: env.IMAP_PASSWORD!,
 		rejectUnauthorized: env.IMAP_TLS_REJECT_UNAUTHORIZED !== "false",
+		timeoutMs: timeoutSeconds * 1000,
 	};
 }
 
-/** Connect, run `fn`, and always log out afterwards. */
-async function withClient<T>(config: ImapConfig, fn: (client: ImapFlow) => Promise<T>): Promise<T> {
+/** Connect, run `fn`, and always log out afterwards. Exported for tests. */
+export async function withClient<T>(config: ImapConfig, fn: (client: ImapFlow) => Promise<T>): Promise<T> {
 	const client = new ImapFlow({
 		host: config.host,
 		port: config.port,
 		secure: config.secure,
 		auth: { user: config.user, pass: config.password },
 		tls: { rejectUnauthorized: config.rejectUnauthorized },
+		connectionTimeout: config.timeoutMs,
+		greetingTimeout: config.timeoutMs,
+		socketTimeout: config.timeoutMs,
 		logger: false,
+	});
+	// Once connected, imapflow reports a dead connection (socket timeout, TLS or
+	// network error) as an 'error' event and fails the pending command with a
+	// generic "Connection not available". An 'error' event without a listener is
+	// thrown by Node and would take the whole pi process down, so catch it here
+	// and report it as the reason the command failed.
+	let connectionError: Error | undefined;
+	client.on("error", (err: Error) => {
+		connectionError ??= err;
 	});
 	await client.connect();
 	try {
 		return await fn(client);
+	} catch (err) {
+		if (connectionError) {
+			throw new Error(`IMAP connection failed: ${connectionError.message}`, { cause: connectionError });
+		}
+		throw err;
 	} finally {
 		await client.logout().catch(() => client.close());
 	}

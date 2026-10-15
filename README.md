@@ -31,6 +31,7 @@ pi -e git:github.com/firestarter2501/pi-imap
 | `IMAP_PORT` | | ポート番号。既定は `993` |
 | `IMAP_SECURE` | | `false` にすると平文接続で開始し、サーバーが対応していれば STARTTLS に切り替えます。既定はポート 993 なら `true` |
 | `IMAP_MODE` | | 起動時のモード。`read-only`（既定）または `read-write` |
+| `IMAP_TIMEOUT` | | 接続時やサーバーが応答しないときに諦めるまでの秒数。既定は `60` |
 | `IMAP_TLS_REJECT_UNAUTHORIZED` | | `false` にすると証明書を検証しません。自己署名証明書のサーバー専用で、通常は設定しないでください |
 
 例:
@@ -108,7 +109,7 @@ scripts/dev.sh down        # テスト用 Pod を削除
 ```
 src/index.ts   pi へのツール・コマンド登録とモード管理
 src/imap.ts    IMAP の操作（imapflow / mailparser の薄いラッパー）
-test/          Dovecot を相手にした結合テスト
+test/          Dovecot を相手にした結合テスト（接続断・無応答の再現を含む）
 scripts/dev.sh podman 用の開発スクリプト
 ```
 

@@ -26,7 +26,7 @@ start_pod() {
 run_node() {
 	podman run --rm -i --pod "$POD" -v "$ROOT:/app:Z" -w /app \
 		-e IMAP_HOST=localhost -e IMAP_PORT=31143 -e IMAP_SECURE=false \
-		-e IMAP_TLS_REJECT_UNAUTHORIZED=false \
+		-e IMAP_TLS_REJECT_UNAUTHORIZED=false -e IMAP_TEST_TLS_PORT=31993 \
 		-e IMAP_USER=test -e IMAP_PASSWORD=secret \
 		"$NODE_IMAGE" "$@"
 }
